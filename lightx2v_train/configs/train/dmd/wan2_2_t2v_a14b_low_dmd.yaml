@@ -1,0 +1,127 @@
+model:
+    name: wan2_2_t2v_a14b
+    base_model_path: ${oc.env:WAN22_MODEL_PATH,/path/to/models/Wan2.2-T2V-A14B}
+    expert: low
+    pretrained_model_name_or_path: ${model.base_model_path}/low_noise_model
+    max_sequence_length: 512
+    running_dtype: bf16
+    transformer_param_dtype: fp32
+    load_vae: false
+    load_text_encoder: false
+    load_transformer: true
+    fake:
+        name: wan2_2_t2v_a14b
+        expert: low
+        pretrained_model_name_or_path: ${model.base_model_path}/low_noise_model
+    teacher:
+        name: wan2_2_t2v_a14b
+        expert: low
+        pretrained_model_name_or_path: ${model.base_model_path}/low_noise_model
+        transformer_param_dtype: bf16
+
+distributed:
+    backend: nccl
+    timeout_minutes: 60
+    parallel_layout: ${oc.env:PARALLEL_LAYOUT,shared}
+    sequence_parallel:
+        enabled: true
+        size: ${oc.env:SP_SIZE,8}
+    fsdp2:
+        enabled: true
+        size: ${oc.env:FSDP_SIZE,8}
+        reshard_after_forward:
+            root_reshard: false
+            block_reshard: true
+        mixed_precision:
+            param_dtype: bf16
+            reduce_dtype: fp32
+            output_dtype: null
+            cast_forward_inputs: false
+
+data:
+    train:
+        name: latent_dataset
+        data_path:
+            - ${oc.env:WAN22_PROMPT_CACHE_PATH,/path/to/cache/wan22_a14b_prompts}
+        batch_size: 1
+        num_workers: ${oc.decode:${oc.env:WAN22_NUM_WORKERS,8}}
+        pin_memory: true
+        shuffle: true
+        drop_last: true
+
+scheduler:
+    num_train_timesteps: 1000
+    timestep_distribution: uniform
+    min_t: 0.001
+    max_t: 1.0
+    time_shift_settings:
+        do_time_shift: true
+        shift_type: linear
+        time_shift_mu: 5.0
+        time_shift_power: 1.0
+        sigma_min: 0.0
+        extra_one_step: true
+
+training:
+    method: wan22_a14b_dmd
+    max_train_iters: ${oc.decode:${oc.env:WAN22_MAX_TRAIN_ITERS,5000}}
+    gradient_accumulation_iters: ${oc.decode:${oc.env:WAN22_GRAD_ACCUM_ITERS,64}}
+    gradient_checkpointing: true
+    max_grad_norm: 10.0
+    lr_scheduler: constant
+    lr_warmup_iters: 0
+    save_every_iters: ${oc.decode:${oc.env:WAN22_SAVE_EVERY_ITERS,50}}
+    save_total_limit: 4
+    save_consolidated_student: true
+    dmd:
+        expert: low
+        boundary_step: 500
+        num_inference_steps: 2
+        denoising_step_list:
+            - 500
+            - 250
+        warp_denoising_step: true
+        num_train_timestep: 1000
+        timestep_shift: 5.0
+        expert_min_step_ratio: 0.04
+        expert_max_step_ratio: 0.96
+        fake_update_ratio: 5
+        height: 480
+        width: 832
+        num_frames: 81
+        # Point directly at high full training's exported HF transformer.
+        high_prefix:
+            pretrained_model_name_or_path: ${oc.env:WAN22_HIGH_FULL_PATH,/path/to/high_full/checkpoint-000005000/student_consolidated/transformer}
+            denoising_step_list:
+                - 1000
+                - 750
+    student:
+        train_type: full
+        optimizer:
+            learning_rate: 0.000002
+            adam_beta1: 0.0
+            adam_beta2: 0.999
+            weight_decay: 0.01
+            adam_epsilon: 0.00000001
+    fake:
+        train_type: full
+        optimizer:
+            learning_rate: 0.0000004
+            adam_beta1: 0.0
+            adam_beta2: 0.999
+            weight_decay: 0.01
+            adam_epsilon: 0.00000001
+    teacher:
+        guidance_scale: 4.0
+        cfg_norm: none
+    output_dir: ${oc.env:WAN22_OUTPUT_DIR,./output_train/wan2_2_t2v_a14b_low_dmd}
+
+inference:
+    method: none
+
+logging:
+    rank_zero_only: true
+    train_log_every_iters: 1
+
+resume:
+    auto_resume: false

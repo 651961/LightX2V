@@ -7,6 +7,7 @@ from lightx2v_train.runtime.distributed import (
     get_sequence_parallel_rank,
     get_sequence_parallel_src_rank,
     get_sequence_parallel_world_size,
+    is_fsdp_sequence_parallel_shared,
     is_sequence_parallel_enabled,
 )
 
@@ -105,6 +106,11 @@ def _local_tensor(tensor: Tensor) -> Tensor:
 
 def sync_sequence_parallel_gradients(params):
     if not is_sequence_parallel_enabled():
+        return
+    if is_fsdp_sequence_parallel_shared():
+        # FSDP reduce-scatter already sums the sequence-partial gradients in
+        # shared layout. The local tensors here are different parameter
+        # shards, so an additional all-reduce would be mathematically wrong.
         return
 
     group = get_sequence_parallel_group()

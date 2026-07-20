@@ -9,7 +9,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
-from lightx2v_train.runtime.distributed import get_data_parallel_rank, get_data_parallel_world_size
+from lightx2v_train.runtime.distributed import get_data_parallel_rank, get_data_parallel_world_size, is_fsdp_sequence_parallel_shared
 from lightx2v_train.utils.registry import DATA_REGISTER
 
 _BICUBIC = getattr(Image, "Resampling", Image).BICUBIC
@@ -126,7 +126,11 @@ def build_image_dataset(data_config_split, train_or_val="train"):
         prompt_dropout_rate=prompt_dropout_rate,
     )
     dp_world_size = get_data_parallel_world_size()
-    sampler = DistributedSampler(dataset, num_replicas=dp_world_size, rank=get_data_parallel_rank(), shuffle=shuffle) if dp_world_size > 1 and train_or_val == "train" else None
+    sampler = (
+        DistributedSampler(dataset, num_replicas=dp_world_size, rank=get_data_parallel_rank(), shuffle=shuffle)
+        if (dp_world_size > 1 or is_fsdp_sequence_parallel_shared()) and train_or_val == "train"
+        else None
+    )
     return DataLoader(
         dataset,
         batch_size=1,

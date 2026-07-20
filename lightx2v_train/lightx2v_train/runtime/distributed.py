@@ -9,6 +9,8 @@ _DEVICE_MESH = None
 _FSDP_DEVICE_MESH = None
 _DP_GROUP = None
 _SP_GROUP = None
+_FSDP_WORLD_SIZE = 1
+_FSDP_SP_SHARED = False
 _DP_RANK = 0
 _DP_WORLD_SIZE = 1
 _SP_RANK = 0
@@ -91,9 +93,40 @@ def _resolve_fsdp_size(config):
     return _positive_int(fsdp_size, "distributed.fsdp_size")
 
 
+def _resolve_parallel_layout(config):
+    layout = str((config or {}).get("distributed", {}).get("parallel_layout", "orthogonal")).strip().lower()
+    if layout not in {"orthogonal", "shared"}:
+        raise ValueError(
+            f"Unsupported distributed.parallel_layout={layout!r}; expected 'orthogonal' or 'shared'."
+        )
+    return layout
+
+
 def _resolve_parallel_sizes(config, world_size):
+    layout = _resolve_parallel_layout(config)
+    dist_config = (config or {}).get("distributed", {})
+    dp_config = dist_config.get("dp", {})
+    fsdp_config = dist_config.get("fsdp2", {})
+    dp_requested = isinstance(dp_config, dict) and dp_config.get("enabled", False)
+    fsdp_requested = isinstance(fsdp_config, dict) and fsdp_config.get("enabled", False)
+    if dp_requested and fsdp_requested:
+        raise ValueError("distributed.dp.enabled and distributed.fsdp2.enabled cannot both be true.")
+
     sp_size = _resolve_sequence_parallel_size(config)
     fsdp_size = _resolve_fsdp_size(config)
+    if layout == "shared":
+        if fsdp_size is None:
+            fsdp_size = world_size
+        if sp_size != world_size or fsdp_size != world_size:
+            raise ValueError(
+                "distributed.parallel_layout='shared' currently requires "
+                "sequence_parallel.size == fsdp2.size == WORLD_SIZE, got "
+                f"{sp_size}, {fsdp_size}, {world_size}."
+            )
+        if not isinstance(fsdp_config, dict) or not fsdp_config.get("enabled", False):
+            raise ValueError("distributed.parallel_layout='shared' requires distributed.fsdp2.enabled=true.")
+        return sp_size, fsdp_size
+
     if fsdp_size is None:
         if world_size % sp_size != 0:
             raise ValueError(f"distributed.sequence_parallel.size={sp_size} must divide WORLD_SIZE={world_size}.")
@@ -119,9 +152,29 @@ def init_distributed(config=None):
 
     global _DEVICE_MESH, _FSDP_DEVICE_MESH
     global _DP_GROUP, _SP_GROUP, _DP_RANK, _DP_WORLD_SIZE, _SP_RANK, _SP_WORLD_SIZE
+    global _FSDP_WORLD_SIZE, _FSDP_SP_SHARED
     if _DEVICE_MESH is None:
         world_size = dist.get_world_size()
         sp_size, fsdp_size = _resolve_parallel_sizes(config, world_size)
+        layout = _resolve_parallel_layout(config)
+
+        _FSDP_WORLD_SIZE = fsdp_size
+        _FSDP_SP_SHARED = layout == "shared"
+
+        if _FSDP_SP_SHARED:
+            # FSDP and SP intentionally use the same ranks but independent
+            # process groups. Logical data parallelism is one: every rank
+            # contributes a different sequence shard of the same sample.
+            _DP_RANK = 0
+            _DP_WORLD_SIZE = 1
+            _SP_RANK = dist.get_rank()
+            _SP_WORLD_SIZE = world_size
+            _DEVICE_MESH = init_device_mesh("cuda", (world_size,), mesh_dim_names=("fsdp",))
+            _FSDP_DEVICE_MESH = _DEVICE_MESH
+            _DP_GROUP = None
+            _SP_GROUP = dist.new_group(ranks=list(range(world_size)), backend=backend)
+            return
+
         dp_size = fsdp_size
 
         _SP_WORLD_SIZE = sp_size
@@ -173,6 +226,14 @@ def get_data_parallel_world_size():
 
 def get_data_parallel_group():
     return _DP_GROUP
+
+
+def get_fsdp_world_size():
+    return _FSDP_WORLD_SIZE if is_distributed() else 1
+
+
+def is_fsdp_sequence_parallel_shared():
+    return is_distributed() and _FSDP_SP_SHARED
 
 
 def get_sequence_parallel_rank():

@@ -613,7 +613,12 @@ class DopsdTrainer(BaseTrainer):
 
         self.model.save_lora_weights(save_dir, adapter_name=self.student_adapter)
         barrier()
-        self.model.save_lora_weights(save_dir, adapter_name=self.teacher_adapter, weights_subdir="teacher")
+        self.model.save_lora_weights(
+            save_dir,
+            adapter_name=self.teacher_adapter,
+            weights_subdir="teacher",
+            include_frozen_params=True,
+        )
         barrier()
 
         config_path = self.config.get("config_path")

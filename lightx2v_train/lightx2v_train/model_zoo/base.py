@@ -204,8 +204,11 @@ class BaseModel:
             self.denoiser_module().delete_adapters(adapter_name)
             self._infer_lora_adapter_name = None
 
-    def save_lora_weights(self, save_dir, adapter_name=None, weights_subdir=None):
-        peft_state_dict = self._get_lora_state_dict_for_save(adapter_name=adapter_name)
+    def save_lora_weights(self, save_dir, adapter_name=None, weights_subdir=None, include_frozen_params=False):
+        peft_state_dict = self._get_lora_state_dict_for_save(
+            adapter_name=adapter_name,
+            include_frozen_params=include_frozen_params,
+        )
         if not is_main_process():
             return
 
@@ -217,7 +220,7 @@ class BaseModel:
         else:
             save_file(lora_state_dict, os.path.join(output_dir, "pytorch_lora_weights.safetensors"))
 
-    def _get_lora_state_dict_for_save(self, adapter_name=None):
+    def _get_lora_state_dict_for_save(self, adapter_name=None, include_frozen_params=False):
         denoiser = self.denoiser_module()
         peft_kwargs = {} if adapter_name is None else {"adapter_name": adapter_name}
         if not is_fsdp2_module(denoiser):
@@ -226,7 +229,9 @@ class BaseModel:
         options = StateDictOptions(
             full_state_dict=True,
             cpu_offload=True,
-            ignore_frozen_params=False,
+            # Normal LoRA jobs only need trainable adapters. Avoid materializing
+            # the frozen base model (14B parameters for Wan2.2) on rank 0.
+            ignore_frozen_params=not include_frozen_params,
             strict=False,
         )
         state_dict, _ = get_state_dict(denoiser, (), options=options)

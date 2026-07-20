@@ -2,13 +2,13 @@ import torch
 from loguru import logger
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 
-from lightx2v_train.runtime.distributed import get_data_parallel_world_size, get_device_mesh, is_distributed
+from lightx2v_train.runtime.distributed import get_device_mesh, get_fsdp_world_size, is_distributed, is_fsdp_sequence_parallel_shared
 from lightx2v_train.utils.utils import get_running_dtype
 
 
 def fsdp2_enabled(config):
     fsdp_config = config.get("distributed", {}).get("fsdp2", {})
-    return is_distributed() and get_data_parallel_world_size() > 1 and fsdp_config.get("enabled", False)
+    return is_distributed() and get_fsdp_world_size() > 1 and fsdp_config.get("enabled", False)
 
 
 def is_fsdp2_module(module):
@@ -67,8 +67,23 @@ def apply_fsdp2(model, config):
     mp_policy = _build_mp_policy(mp_config)
     mesh = get_device_mesh()
 
+    shared_fsdp_sp = is_fsdp_sequence_parallel_shared()
     for module, reshard_after_forward in _iter_shard_plan(model.fsdp2_shard_plan(fsdp_config)):
-        _fully_shard_module(module, mesh, mp_policy, reshard_after_forward)
+        sharded_module = _fully_shard_module(module, mesh, mp_policy, reshard_after_forward)
+        if shared_fsdp_sp:
+            # These ranks own sequence partitions of one sample, not data
+            # replicas. Their partial gradients must be summed, while FSDP2
+            # defaults to averaging its reduce-scatter result.
+            if hasattr(sharded_module, "set_gradient_divide_factor"):
+                sharded_module.set_gradient_divide_factor(1.0)
+            elif hasattr(sharded_module, "set_reduce_scatter_divide_factor"):
+                # PyTorch 2.7 exposed the same control under its original name.
+                sharded_module.set_reduce_scatter_divide_factor(1.0)
+            else:
+                raise RuntimeError(
+                    "Shared FSDP+SP requires FSDPModule.set_gradient_divide_factor() "
+                    "or set_reduce_scatter_divide_factor()."
+                )
 
     torch.cuda.empty_cache()
 

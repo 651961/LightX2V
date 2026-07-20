@@ -11,7 +11,7 @@ from lightx2v_train.infer import build_inferencer
 from lightx2v_train.runtime.checkpoint import find_latest_checkpoint, parse_checkpoint_iteration, prune_checkpoints
 from lightx2v_train.runtime.distributed import barrier, get_world_size, is_main_process
 from lightx2v_train.runtime.monitor import build_monitor
-from lightx2v_train.runtime.parallel import apply_parallel, set_parallel_gradient_sync
+from lightx2v_train.runtime.parallel import apply_parallel, set_parallel_gradient_sync, synchronize_trainable_parameters
 from lightx2v_train.schedulers.flow_matching import RectifiedFlowMatchingScheduler
 from lightx2v_train.utils.utils import get_running_dtype
 
@@ -96,6 +96,7 @@ class BaseTrainer:
         if self.train_type == "lora":
             model.add_lora(self.lora_rank, self.lora_alpha, self.lora_target_modules)
             model.set_lora_trainable()
+            synchronize_trainable_parameters(model)
             return
         model.set_full_trainable()
 

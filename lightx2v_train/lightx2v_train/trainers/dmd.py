@@ -23,15 +23,17 @@ from lightx2v_train.model_zoo.native.ltx2 import (
 from lightx2v_train.runtime.checkpoint import prune_checkpoints
 from lightx2v_train.runtime.distributed import (
     barrier,
+    get_fsdp_world_size,
     get_sequence_parallel_rank,
     get_sequence_parallel_world_size,
     get_world_size,
     is_distributed,
+    is_fsdp_sequence_parallel_shared,
     is_main_process,
     is_sequence_parallel_enabled,
     reduce_mean,
 )
-from lightx2v_train.runtime.parallel import apply_parallel, set_parallel_gradient_sync
+from lightx2v_train.runtime.parallel import apply_parallel, set_parallel_gradient_sync, synchronize_trainable_parameters
 from lightx2v_train.runtime.sequence_parallel import all_gather_sequence, broadcast_sequence_parallel_value, sync_sequence_parallel_gradients
 from lightx2v_train.schedulers import DMDFlowMatchingScheduler
 from lightx2v_train.schedulers.flow_matching import CausalForcingFlowMatchScheduler
@@ -123,6 +125,7 @@ class DmdTrainer(BaseTrainer):
         if train_type == "lora":
             model.add_lora(lora_config["rank"], lora_config["alpha"], lora_config.get("target_modules"))
             model.set_lora_trainable()
+            synchronize_trainable_parameters(model)
             return
         model.set_full_trainable()
 
@@ -641,6 +644,31 @@ class DmdTrainer(BaseTrainer):
         checkpoint_fake_train_type = state.get("fake_train_type")
         if checkpoint_fake_train_type is not None and checkpoint_fake_train_type != self.fake_train_type:
             raise RuntimeError(f"Cannot resume checkpoint saved with fake_train_type={checkpoint_fake_train_type!r} using training.fake.train_type={self.fake_train_type!r}: {state_path}")
+        expected_parallel = self._parallel_checkpoint_metadata()
+        missing_parallel = [key for key in expected_parallel if key not in state]
+        if missing_parallel:
+            if expected_parallel["parallel_layout"] == "shared":
+                missing = ", ".join(missing_parallel)
+                raise RuntimeError(
+                    "Cannot resume a checkpoint without complete parallel topology metadata "
+                    f"({missing}) using parallel_layout='shared': {state_path}"
+                )
+            if len(missing_parallel) != len(expected_parallel):
+                missing = ", ".join(missing_parallel)
+                raise RuntimeError(f"Checkpoint has incomplete parallel topology metadata ({missing}): {state_path}")
+            logger.warning("Checkpoint {} has no parallel topology metadata. Assuming legacy orthogonal layout.", state_path)
+        for key, expected in expected_parallel.items():
+            saved = state.get(key)
+            if saved is not None and saved != expected:
+                raise RuntimeError(f"Cannot resume checkpoint saved with {key}={saved!r} using {key}={expected!r}: {state_path}")
+
+    @staticmethod
+    def _parallel_checkpoint_metadata():
+        return {
+            "parallel_layout": "shared" if is_fsdp_sequence_parallel_shared() else "orthogonal",
+            "sequence_parallel_size": get_sequence_parallel_world_size(),
+            "fsdp_size": get_fsdp_world_size(),
+        }
 
     def _load_single_process_state(self, resume_ckpt_path):
         training_state_path = os.path.join(resume_ckpt_path, "training_state.pt")
@@ -756,6 +784,7 @@ class DmdTrainer(BaseTrainer):
             "lr_scheduler": self.lr_scheduler.state_dict(),
             "fake_optimizer": self.fake_optimizer.state_dict(),
             "fake_lr_scheduler": self.fake_lr_scheduler.state_dict(),
+            **self._parallel_checkpoint_metadata(),
         }
         if is_main_process():
             torch.save(training_state, os.path.join(save_dir, "training_state.pt"))
@@ -789,6 +818,7 @@ class DmdTrainer(BaseTrainer):
                     "fake_train_type": self.fake_train_type,
                     "lr_scheduler": self.lr_scheduler.state_dict(),
                     "fake_lr_scheduler": self.fake_lr_scheduler.state_dict(),
+                    **self._parallel_checkpoint_metadata(),
                 },
                 os.path.join(save_dir, "trainer_state.pt"),
             )

@@ -4,6 +4,7 @@ from .dmd import DmdTrainer, LTX2T2AVArDmdTrainer, LTX2T2AVDmdTrainer, LingBotVi
 from .dopsd import DopsdTrainer
 from .flow import FlowMatchingTrainer, LTX2T2AVFlowTrainer
 from .tf import LTX2T2AVTeacherForcingTrainer, TFTrainer
+from .wan22_dmd import Wan22A14BDmdTrainer
 
 ARDmdTrainer = VideoArDmdTrainer
 
@@ -20,5 +21,6 @@ __all__ = [
     "TFTrainer",
     "VideoArDmdTrainer",
     "VideoDmdTrainer",
+    "Wan22A14BDmdTrainer",
     "DopsdTrainer",
 ]

@@ -201,7 +201,10 @@ class Wan22A14BDmdTrainer(VideoDmdTrainer):
             for key, value in self.model_config.items()
             if key not in {"fake", "teacher", "student"}
         }
-        prefix_model_config["name"] = "wan2_2_t2v_a14b"
+        # Keep the concrete model adapter selected by the trainer.  Bernini
+        # reuses this expert-aware rollout but must keep its own model adapter
+        # when loading the frozen high expert.
+        prefix_model_config["name"] = self.model_config["name"]
         prefix_model_config["expert"] = "high"
         prefix_model_config["pretrained_model_name_or_path"] = self.high_prefix_config["pretrained_model_name_or_path"]
         # The prefix is frozen and only participates in forward passes.  Do

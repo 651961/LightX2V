@@ -72,6 +72,9 @@ dependencies = [
     "torchada>=0.1.10",
 ]
 
+[project.optional-dependencies]
+liger = ["liger-kernel>=0.7.0"]
+
 [project.urls]
 Homepage = "https://github.com/ModelTC/LightX2V"
 Documentation = "https://lightx2v-en.readthedocs.io/en/latest/"

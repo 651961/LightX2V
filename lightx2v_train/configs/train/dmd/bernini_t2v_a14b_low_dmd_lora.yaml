@@ -1,0 +1,159 @@
+model:
+    name: bernini_t2v_a14b
+    base_model_path: ${oc.env:BERNINI_EXPERT_ROOT,/path/to/cache/bernini_experts}
+    expert: low
+    pretrained_model_name_or_path: ${model.base_model_path}/low_noise_model
+    running_dtype: bf16
+    transformer_param_dtype: fp32
+    rms_norm_backend: ${oc.env:BERNINI_RMS_NORM_BACKEND,liger}
+    load_transformer: true
+    load_vae: false
+    load_text_encoder: false
+    load_mllm: false
+    fake:
+        name: bernini_t2v_a14b
+        expert: low
+        pretrained_model_name_or_path: ${model.base_model_path}/low_noise_model
+    teacher:
+        name: bernini_t2v_a14b
+        expert: low
+        pretrained_model_name_or_path: ${model.base_model_path}/low_noise_model
+        transformer_param_dtype: bf16
+
+distributed:
+    backend: nccl
+    timeout_minutes: 60
+    parallel_layout: ${oc.env:PARALLEL_LAYOUT,shared}
+    sequence_parallel:
+        enabled: true
+        size: ${oc.env:SP_SIZE,8}
+    fsdp2:
+        enabled: true
+        size: ${oc.env:FSDP_SIZE,8}
+        reshard_after_forward:
+            root_reshard: false
+            block_reshard: true
+        mixed_precision:
+            param_dtype: bf16
+            reduce_dtype: fp32
+            output_dtype: null
+            cast_forward_inputs: false
+
+data:
+    train:
+        name: latent_dataset
+        data_path:
+            - ${oc.env:BERNINI_CONDITION_CACHE,/path/to/cache/bernini_t2v_conditions}
+        batch_size: 1
+        num_workers: ${oc.decode:${oc.env:BERNINI_NUM_WORKERS,8}}
+        pin_memory: true
+        shuffle: true
+        drop_last: true
+
+scheduler:
+    num_train_timesteps: 1000
+    timestep_distribution: uniform
+    min_t: 0.001
+    max_t: 1.0
+    time_shift_settings:
+        do_time_shift: true
+        shift_type: linear
+        time_shift_mu: 5.0
+        time_shift_power: 1.0
+        sigma_min: 0.0
+        extra_one_step: true
+
+training:
+    method: bernini_dmd
+    max_train_iters: ${oc.decode:${oc.env:BERNINI_MAX_TRAIN_ITERS,5000}}
+    gradient_accumulation_iters: ${oc.decode:${oc.env:BERNINI_GRAD_ACCUM_ITERS,64}}
+    gradient_checkpointing: true
+    max_grad_norm: 10.0
+    lr_scheduler: constant
+    lr_warmup_iters: 10
+    save_every_iters: ${oc.decode:${oc.env:BERNINI_SAVE_EVERY_ITERS,50}}
+    save_total_limit: 4
+    dmd:
+        expert: low
+        # Configurable assumption: reuse the current LightX2V Wan2.2 DMD
+        # rollout/schedule until an official Bernini DMD trajectory exists.
+        boundary_step: 500
+        num_inference_steps: 2
+        denoising_step_list:
+            - 500
+            - 250
+        warp_denoising_step: true
+        num_train_timestep: 1000
+        timestep_shift: 5.0
+        expert_min_step_ratio: 0.04
+        expert_max_step_ratio: 0.96
+        fake_update_ratio: 5
+        height: 480
+        width: 848
+        num_frames: 81
+        high_prefix:
+            pretrained_model_name_or_path: ${model.base_model_path}/high_noise_model
+            lora_path: ${oc.env:BERNINI_HIGH_LORA_PATH,/path/to/high_lora/checkpoint-000005000}
+            lora:
+                rank: 128
+                alpha: 128
+                target_modules:
+                    - to_q
+                    - to_k
+                    - to_v
+                    - to_out.0
+                    - ffn.net.0.proj
+                    - ffn.net.2
+            denoising_step_list:
+                - 1000
+                - 750
+    student:
+        train_type: lora
+        lora:
+            rank: 128
+            alpha: 128
+            target_modules:
+                - to_q
+                - to_k
+                - to_v
+                - to_out.0
+                - ffn.net.0.proj
+                - ffn.net.2
+        optimizer:
+            learning_rate: 0.0001
+            adam_beta1: 0.9
+            adam_beta2: 0.999
+            weight_decay: 0.001
+            adam_epsilon: 0.00000001
+    fake:
+        train_type: lora
+        lora:
+            rank: 128
+            alpha: 128
+            target_modules:
+                - to_q
+                - to_k
+                - to_v
+                - to_out.0
+                - ffn.net.0.proj
+                - ffn.net.2
+        optimizer:
+            learning_rate: 0.00002
+            adam_beta1: 0.9
+            adam_beta2: 0.999
+            weight_decay: 0.001
+            adam_epsilon: 0.00000001
+    teacher:
+        omega_txt: 4.0
+        omega_tgt: 0.5
+    output_dir: ${oc.env:BERNINI_OUTPUT_DIR,./output_train/bernini_t2v_a14b_low_dmd_lora}
+
+inference:
+    method: none
+
+logging:
+    rank_zero_only: true
+    train_log_every_iters: 1
+
+resume:
+    auto_resume: false

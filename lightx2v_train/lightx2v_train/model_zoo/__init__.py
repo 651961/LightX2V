@@ -1,5 +1,6 @@
 from lightx2v_train.utils.registry import build_model
 
+from .bernini import BerniniR2VA14BModel, BerniniT2VA14BModel
 from .flux2_dev import Flux2DevModel
 from .flux2_klein import Flux2KleinModel
 from .lingbot_video import LingBotVideoModel
@@ -13,6 +14,8 @@ from .wan_ti2v_5b import WanTI2V5BModel
 
 __all__ = [
     "build_model",
+    "BerniniR2VA14BModel",
+    "BerniniT2VA14BModel",
     "QwenImageModel",
     "QwenImageEditModel",
     "LongCatImageModel",
